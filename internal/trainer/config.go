@@ -46,10 +46,16 @@ func createSamplePrompts(projectName string, s Settings, outDir string) (string,
 		}
 	}
 
+	// A settings file saved from a half-loaded form holds 0 here, and sd-scripts
+	// then renders 32x32 previews that look like training failed.
+	width, height := s.Width, s.Height
+	if width <= 0 || height <= 0 {
+		width, height = DefaultSettings("").Width, DefaultSettings("").Height
+	}
 	params := fmt.Sprintf(" --n %s --w %d --h %d --l %s --s %d --d %d",
 		neg,
-		s.Width,
-		s.Height,
+		width,
+		height,
 		strconv.FormatFloat(sampleCFG(s), 'f', -1, 64),
 		sampleGenerationSteps(s),
 		s.SampleSeed,
@@ -77,6 +83,9 @@ func sampleGenerationSteps(s Settings) int {
 
 func sampleCFG(s Settings) float64 {
 	if s.Architecture != ArchitectureKrea2 {
+		if s.SampleCFG <= 0 {
+			return DefaultSettings("").SampleCFG
+		}
 		return s.SampleCFG
 	}
 	if strings.Contains(strings.ToLower(filepath.Base(s.DiTPath)), "turbo") {

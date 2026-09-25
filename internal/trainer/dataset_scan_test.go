@@ -215,3 +215,16 @@ func TestValidateSettings_partialSecondCaption(t *testing.T) {
 		t.Errorf("want the subfolder image counted as missing a .txt, got:\n%s", errs)
 	}
 }
+
+func TestCreateSamplePrompts_zeroSizeAndCFGFallBackToDefaults(t *testing.T) {
+	s := normalizeSettings(Settings{Architecture: ArchitectureSDXL, SamplePrompts: []string{"1girl"}})
+	s.Width, s.Height, s.SampleCFG = 0, 0, 0
+	path, err := createSamplePrompts("zero", s, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), " --w 1024 --h 1024 --l 4 ") {
+		t.Errorf("zero preview size/CFG should fall back to defaults, got:\n%s", data)
+	}
+}
