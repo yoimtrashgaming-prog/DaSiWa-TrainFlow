@@ -3,7 +3,6 @@ package trainer
 import (
 	"bytes"
 	"fmt"
-	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -142,35 +141,27 @@ func sampleStepFromName(name string) int {
 	return 0
 }
 
+// analyzeDatasetResolution sizes the buckets from every image folder the
+// sd-scripts profiles will train.
 func analyzeDatasetResolution(datasetPath string) (int, int) {
-	entries, err := os.ReadDir(datasetPath)
-	if err != nil {
-		return 512, 768
-	}
 	maxArea := 0
 	maxSide := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !validImageExt(entry.Name()) {
-			continue
-		}
-		file, err := os.Open(filepath.Join(datasetPath, entry.Name()))
-		if err != nil {
-			continue
-		}
-		cfg, _, err := image.DecodeConfig(file)
-		_ = file.Close()
-		if err != nil {
-			continue
-		}
-		area := cfg.Width * cfg.Height
-		if area > maxArea {
-			maxArea = area
-		}
-		if cfg.Width > maxSide {
-			maxSide = cfg.Width
-		}
-		if cfg.Height > maxSide {
-			maxSide = cfg.Height
+	for _, folder := range scanImageDataset(datasetPath) {
+		for _, name := range folder.Images {
+			cfg, ok := imageConfig(filepath.Join(folder.Path, name))
+			if !ok {
+				continue
+			}
+			area := cfg.Width * cfg.Height
+			if area > maxArea {
+				maxArea = area
+			}
+			if cfg.Width > maxSide {
+				maxSide = cfg.Width
+			}
+			if cfg.Height > maxSide {
+				maxSide = cfg.Height
+			}
 		}
 	}
 	if maxArea == 0 {
@@ -203,8 +194,7 @@ func validateSettings(s Settings) []string {
 		errs = append(errs, "Dataset path not found: "+s.DatasetPath)
 		return errs
 	}
-	entries, err := os.ReadDir(s.DatasetPath)
-	if err != nil {
+	if _, err := os.ReadDir(s.DatasetPath); err != nil {
 		errs = append(errs, "Dataset cannot be read: "+err.Error())
 		return errs
 	}
@@ -219,26 +209,35 @@ func validateSettings(s Settings) []string {
 		}
 		return errs
 	}
+	// sd-scripts profiles train every image folder under the dataset path; the
+	// Musubi image profile (Krea 2) still reads only the top folder.
+	var folders []datasetFolder
+	if profile.Family == trainingFamilySDScripts {
+		folders = scanImageDataset(s.DatasetPath)
+	} else if folder, ok := readDatasetFolder(s.DatasetPath, s.DatasetPath); ok {
+		folders = []datasetFolder{folder}
+	}
 	var images []string
 	var missingCaptions []string
 	var oversized []string
-	for _, entry := range entries {
-		if entry.IsDir() || !validImageExt(entry.Name()) {
+	for _, folder := range folders {
+		for _, name := range folder.Images {
+			images = append(images, name)
+			stem := strings.TrimSuffix(name, filepath.Ext(name))
+			if !process.FileExists(filepath.Join(folder.Path, stem+captionExtPrimary)) {
+				missingCaptions = append(missingCaptions, name)
+			}
+			if cfg, ok := imageConfig(filepath.Join(folder.Path, name)); ok && (cfg.Width >= 2048 || cfg.Height >= 2048) {
+				oversized = append(oversized, name)
+			}
+		}
+		if profile.Family != trainingFamilySDScripts {
 			continue
 		}
-		images = append(images, entry.Name())
-		stem := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-		if !process.FileExists(filepath.Join(s.DatasetPath, stem+".txt")) {
-			missingCaptions = append(missingCaptions, entry.Name())
-		}
-		path := filepath.Join(s.DatasetPath, entry.Name())
-		file, openErr := os.Open(path)
-		if openErr == nil {
-			cfg, _, decodeErr := image.DecodeConfig(file)
-			_ = file.Close()
-			if decodeErr == nil && (cfg.Width >= 2048 || cfg.Height >= 2048) {
-				oversized = append(oversized, entry.Name())
-			}
+		// A second caption trains per folder, all or nothing: an image without
+		// one would otherwise train with an empty caption.
+		if n := folder.Captions[captionExtSecondary]; n > 0 && n < len(folder.Images) {
+			errs = append(errs, fmt.Sprintf("Folder %q: %d of %d images have a .caption file. Give every image in the folder a .caption, or remove them all.", folder.Rel, n, len(folder.Images)))
 		}
 	}
 	if len(images) == 0 {

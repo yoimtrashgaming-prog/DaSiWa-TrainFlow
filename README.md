@@ -122,6 +122,53 @@ The runtime tool opens at `http://127.0.0.1:7870`. Click **Verify Runtime**, the
 
 ---
 
+## Dataset Layout
+
+For **SDXL / Pony / Illustrious** and **Anima**, the dataset folder can hold subfolders, and each image can have two captions.
+
+### Subfolders
+
+Sort images into folders however you like. Every folder under the dataset path that contains images is trained.
+
+```
+my-dataset/
+├── 1.png   1.txt
+├── 2.png   2.txt
+├── closeups/
+│   ├── 1.png   1.txt
+│   └── 2.png   2.txt
+└── outfits/
+    └── winter/
+        └── 1.png   1.txt
+```
+
+- A caption belongs to the image with the same name **in the same folder**.
+- Two things are skipped: the top-level `input/` folder, where Dataset Prep keeps your originals, and any folder whose name starts with a dot.
+- Every folder is weighted the same. Folder names are only for your own sorting.
+- **Tag** and **Resize** in Dataset Prep work through every folder. Resize moves each folder's originals to the same path under `input/` (for example `input/closeups/`) and writes the numbered copies back into the folder they came from.
+
+Krea 2, LTX 2.3 and Wan 2.2 still read only the top folder.
+
+### Two captions per image
+
+Give an image a **`.txt`** and a **`.caption`** with the same name:
+
+| File | What goes in it |
+|------|-----------------|
+| `1.txt` | Booru tags, as the tagger writes them. Required for every image. |
+| `1.caption` | A natural-language description. Optional. |
+
+An image with both trains **once with each caption**, so the model learns the concept from tags and from plain sentences. Your trigger word is added to both.
+
+**Rules:**
+- `.caption` works **per folder, all or nothing.** Training refuses to start if a folder has `.caption` files for some images but not others, and the error names the folder. Put images you only have tags for in their own folder.
+- Put **one caption per file.** Don't write two lines into one `.txt` expecting both to be used: sd-scripts reads only the first line.
+- The tagger does not write `.caption` files. Write them yourself or with a vision-language model.
+
+**What changes under the hood:** each caption type becomes its own `[[datasets]]` block in the generated dataset TOML, with one subset per folder. sd-scripts keys images by file path, so the same image listed twice inside one block would keep only one of its captions. When `.caption` files are present, the text encoder cache is held **in memory** rather than written to disk, because the disk cache is one file per image and cannot hold two captions. All of this uses standard sd-scripts dataset options, so it keeps working when sd-scripts updates.
+
+---
+
 ## Features At A Glance
 
 ### Embedded Training GUI
@@ -146,6 +193,7 @@ Single portable binary, no separate web build step. Everything runs from one dow
 - Resize-copy helper (`training/prepared/<project>`)
 - Video normalization pipeline: resolution, FPS, duration, codec, quality, parallel workers, speed control, skip frames
 - Automatic Musubi dataset TOML generation with text/latent cache rebuild triggers
+- Subfolders and a second caption per image for SDXL and Anima (see [Dataset Layout](#dataset-layout))
 
 ### Runtime & Model Management
 - Companion Runtime Tool at `http://127.0.0.1:7870`

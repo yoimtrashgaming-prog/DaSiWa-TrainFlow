@@ -79,7 +79,24 @@ func sampleCFG(s Settings) float64 {
 }
 
 func createDatasetTOML(projectName string, s Settings, profile trainingProfile, baseRes, maxBucket int, outDir string) (string, error) {
-	numImages := countDatasetImages(s.DatasetPath)
+	// One [[datasets]] block per caption type, one subset per image folder. A second
+	// caption type needs its own block: sd-scripts keys images by path, so the same
+	// image listed twice inside one block would keep only one of its captions.
+	folders := scanImageDataset(s.DatasetPath)
+	if len(folders) == 0 {
+		folders = []datasetFolder{{Path: s.DatasetPath}}
+	}
+	sets := captionSets(folders)
+	captionExts := []string{captionExtPrimary}
+	if len(sets[captionExtSecondary]) > 0 {
+		captionExts = append(captionExts, captionExtSecondary)
+	}
+	numImages := 0
+	for _, ext := range captionExts {
+		for _, folder := range sets[ext] {
+			numImages += len(folder.Images)
+		}
+	}
 	if numImages == 0 {
 		numImages = 1
 	}
@@ -99,21 +116,25 @@ func createDatasetTOML(projectName string, s Settings, profile trainingProfile, 
 	content.WriteString("min_bucket_reso = 256\n")
 	content.WriteString(fmt.Sprintf("max_bucket_reso = %d\n", maxBucket))
 	content.WriteString(fmt.Sprintf("bucket_reso_steps = %d\n", profile.BucketStep))
-	content.WriteString("bucket_no_upscale = true\n\n")
-	content.WriteString("[[datasets]]\n")
-	content.WriteString(fmt.Sprintf("resolution = %d\n\n", baseRes))
-	content.WriteString("[[datasets.subsets]]\n")
-	content.WriteString(fmt.Sprintf("image_dir = %s\n", tomlString(filepath.ToSlash(absPath(s.DatasetPath)))))
-	content.WriteString("caption_extension = \".txt\"\n")
-	content.WriteString(fmt.Sprintf("num_repeats = %d\n", repeats))
-	if prefix == "" {
-		content.WriteString("caption_prefix = \"\"\n")
-	} else {
-		content.WriteString(fmt.Sprintf("caption_prefix = %s\n", tomlString(prefix)))
-	}
-	content.WriteString("keep_tokens = 1\n")
-	if profile.Architecture == ArchitectureAnima {
-		content.WriteString("caption_dropout_rate = 0.05\n")
+	content.WriteString("bucket_no_upscale = true\n")
+	for _, ext := range captionExts {
+		content.WriteString("\n[[datasets]]\n")
+		content.WriteString(fmt.Sprintf("resolution = %d\n", baseRes))
+		for _, folder := range sets[ext] {
+			content.WriteString("\n[[datasets.subsets]]\n")
+			content.WriteString(fmt.Sprintf("image_dir = %s\n", tomlString(filepath.ToSlash(absPath(folder.Path)))))
+			content.WriteString(fmt.Sprintf("caption_extension = %s\n", tomlString(ext)))
+			content.WriteString(fmt.Sprintf("num_repeats = %d\n", repeats))
+			if prefix == "" {
+				content.WriteString("caption_prefix = \"\"\n")
+			} else {
+				content.WriteString(fmt.Sprintf("caption_prefix = %s\n", tomlString(prefix)))
+			}
+			content.WriteString("keep_tokens = 1\n")
+			if profile.Architecture == ArchitectureAnima {
+				content.WriteString("caption_dropout_rate = 0.05\n")
+			}
+		}
 	}
 
 	path := filepath.Join(outDir, projectName+"_dataset.toml")
@@ -189,7 +210,7 @@ func writeAnimaTrainingTOML(content *strings.Builder, projectName string, s Sett
 	content.WriteString("cache_latents = true\n")
 	content.WriteString("cache_latents_to_disk = true\n")
 	content.WriteString("cache_text_encoder_outputs = true\n")
-	content.WriteString("cache_text_encoder_outputs_to_disk = true\n")
+	writeTextEncoderDiskCacheTOML(content, s)
 	attnMode := "torch"
 	if s.FlashAttention {
 		attnMode = "flash"
@@ -294,7 +315,7 @@ func writeSDXLTrainingTOML(content *strings.Builder, projectName string, s Setti
 	content.WriteString("cache_latents_to_disk = true\n")
 	if s.TrainUNetOnly {
 		content.WriteString("cache_text_encoder_outputs = true\n")
-		content.WriteString("cache_text_encoder_outputs_to_disk = true\n")
+		writeTextEncoderDiskCacheTOML(content, s)
 	}
 	content.WriteString("sdpa = true\n")
 	content.WriteString("save_model_as = \"safetensors\"\n")
@@ -352,6 +373,16 @@ func countDatasetVideos(datasetPath string) int {
 		}
 	}
 	return count
+}
+
+// writeTextEncoderDiskCacheTOML keeps the text encoder cache on disk unless the
+// dataset trains a second caption per image. The disk cache is one file per
+// image path, so with .txt and .caption both present the second caption would
+// silently load the first one's cache. The in-memory cache is per entry.
+func writeTextEncoderDiskCacheTOML(content *strings.Builder, s Settings) {
+	if !hasSecondaryCaptions(s.DatasetPath) {
+		content.WriteString("cache_text_encoder_outputs_to_disk = true\n")
+	}
 }
 
 func tomlString(value string) string {

@@ -1052,16 +1052,40 @@ runpy.run_path(train_script, run_name="__main__")
 }
 
 func datasetPrepArgs(root, action string, s Settings) []string {
-	tagArgs := datasetTagArgs(root, s)
+	tagCommands := datasetTagCommands(root, s)
 	resizeArgs := datasetResizeArgs(root, s)
 	switch action {
 	case "tag":
-		return tagArgs
+		return sequentialPythonArgs(tagCommands)
 	case "resize":
 		return resizeArgs
 	default:
-		payload, _ := json.Marshal([][]string{tagArgs, resizeArgs})
-		script := `
+		return sequentialPythonArgs(append(tagCommands, resizeArgs))
+	}
+}
+
+// datasetTagCommands tags each image folder separately rather than passing
+// --recursive, which would also re-tag the originals Dataset Prep keeps in input/.
+func datasetTagCommands(root string, s Settings) [][]string {
+	folders := scanImageDataset(s.DatasetPath)
+	if len(folders) == 0 {
+		return [][]string{datasetTagArgs(root, s, s.DatasetPath)}
+	}
+	var commands [][]string
+	for _, folder := range folders {
+		commands = append(commands, datasetTagArgs(root, s, folder.Path))
+	}
+	return commands
+}
+
+// sequentialPythonArgs runs several Python command lines one after another,
+// stopping at the first failure.
+func sequentialPythonArgs(commands [][]string) []string {
+	if len(commands) == 1 {
+		return commands[0]
+	}
+	payload, _ := json.Marshal(commands)
+	script := `
 import json
 import subprocess
 import sys
@@ -1071,14 +1095,13 @@ for command in json.loads(sys.argv[1]):
     print("$ " + " ".join(command), flush=True)
     subprocess.check_call(command)
 `
-		return []string{"-c", script, string(payload)}
-	}
+	return []string{"-c", script, string(payload)}
 }
 
-func datasetTagArgs(root string, s Settings) []string {
+func datasetTagArgs(root string, s Settings, dir string) []string {
 	args := []string{
 		filepath.Join(root, "training", "sd-scripts", "finetune", "tag_images_by_wd14_tagger.py"),
-		filepath.ToSlash(absPath(s.DatasetPath)),
+		filepath.ToSlash(absPath(dir)),
 		"--repo_id", "wd-eva02-large-tagger-v3",
 		"--model_dir", filepath.ToSlash(absPath(filepath.Join(root, "models"))),
 		"--onnx",
@@ -1114,52 +1137,80 @@ output_dir = Path(sys.argv[3]).resolve()
 max_side = int(sys.argv[4])
 
 image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+# .txt is required for every image; .caption is an optional second caption.
+caption_exts = [".txt", ".caption"]
 output_dir.mkdir(parents=True, exist_ok=True)
 input_dir.mkdir(parents=True, exist_ok=True)
 
 def natural_key(path):
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", path.name)]
 
-for child in list(src.iterdir()):
-    if child.name == input_dir.name or not child.is_file():
+# Every folder that holds images is prepared on its own: originals move to the
+# same relative path under input/, numbered copies stay where they were.
+def dataset_folders(top):
+    folders = [top]
+    for child in sorted(top.rglob("*")):
+        if not child.is_dir() or child == input_dir or input_dir in child.parents:
+            continue
+        if any(part.startswith(".") or part == "__pycache__" for part in child.relative_to(top).parts):
+            continue
+        folders.append(child)
+    return folders
+
+def is_dataset_file(path):
+    return path.is_file() and (path.suffix.lower() in image_exts or path.suffix.lower() in caption_exts)
+
+prepared = 0
+for folder in dataset_folders(src):
+    rel = folder.relative_to(src)
+    if not any(is_dataset_file(child) for child in folder.iterdir()):
         continue
-    if child.suffix.lower() in image_exts or child.suffix.lower() == ".txt":
-        target = input_dir / child.name
-        if target.exists():
-            raise RuntimeError(f"Refusing to overwrite existing input file while preparing dataset: {target}")
-        shutil.move(str(child), str(target))
+    folder_input = input_dir / rel
+    folder_output = output_dir / rel
+    folder_input.mkdir(parents=True, exist_ok=True)
+    folder_output.mkdir(parents=True, exist_ok=True)
+    for child in list(folder.iterdir()):
+        if is_dataset_file(child):
+            target = folder_input / child.name
+            if target.exists():
+                raise RuntimeError(f"Refusing to overwrite existing input file while preparing dataset: {target}")
+            shutil.move(str(child), str(target))
 
-images = sorted([p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in image_exts], key=natural_key)
-captions_by_stem = {p.stem: p for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() == ".txt"}
-image_stems = {p.stem for p in images}
-missing_captions = [p.name for p in images if p.stem not in captions_by_stem]
-orphan_captions = [p.name for p in sorted(captions_by_stem.values(), key=natural_key) if p.stem not in image_stems]
-if missing_captions or orphan_captions:
-    problems = []
-    if missing_captions:
-        problems.append("images without exact same-name .txt captions: " + ", ".join(missing_captions))
-    if orphan_captions:
-        problems.append(".txt captions without exact same-name images: " + ", ".join(orphan_captions))
-    raise RuntimeError("Dataset prep requires exact image/caption filename pairs before renumbering; " + "; ".join(problems))
+    images = sorted([p for p in folder_input.iterdir() if p.is_file() and p.suffix.lower() in image_exts], key=natural_key)
+    image_stems = {p.stem for p in images}
+    captions = {ext: {p.stem: p for p in folder_input.iterdir() if p.is_file() and p.suffix.lower() == ext} for ext in caption_exts}
+    missing_captions = [p.name for p in images if p.stem not in captions[".txt"]]
+    orphan_captions = [p.name for ext in caption_exts for p in sorted(captions[ext].values(), key=natural_key) if p.stem not in image_stems]
+    if missing_captions or orphan_captions:
+        problems = []
+        if missing_captions:
+            problems.append("images without exact same-name .txt captions: " + ", ".join(missing_captions))
+        if orphan_captions:
+            problems.append("captions without exact same-name images: " + ", ".join(orphan_captions))
+        raise RuntimeError(f"Dataset prep in {folder} requires exact image/caption filename pairs before renumbering; " + "; ".join(problems))
 
-for index, image_path in enumerate(images, 1):
-    base = str(index)
-    with Image.open(image_path) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        width, height = image.size
-        scale = min(1.0, max_side / max(width, height))
-        new_width = max(1, round(width * scale))
-        new_height = max(1, round(height * scale))
-        if (new_width, new_height) != image.size:
-            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        out_image = output_dir / f"{base}.png"
-        image.save(out_image)
-    caption_src = captions_by_stem[image_path.stem]
-    caption_dst = output_dir / f"{base}.txt"
-    shutil.copy2(caption_src, caption_dst)
-    print(f"Prepared {image_path.name} + {caption_src.name} -> {out_image.name} + {caption_dst.name} ({new_width}x{new_height})", flush=True)
+    for index, image_path in enumerate(images, 1):
+        base = str(index)
+        with Image.open(image_path) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            width, height = image.size
+            scale = min(1.0, max_side / max(width, height))
+            new_width = max(1, round(width * scale))
+            new_height = max(1, round(height * scale))
+            if (new_width, new_height) != image.size:
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            out_image = folder_output / f"{base}.png"
+            image.save(out_image)
+        copied = []
+        for ext in caption_exts:
+            caption_src = captions[ext].get(image_path.stem)
+            if caption_src is not None:
+                shutil.copy2(caption_src, folder_output / f"{base}{ext}")
+                copied.append(caption_src.name)
+        prepared += 1
+        print(f"Prepared {rel / image_path.name} + {', '.join(copied)} -> {rel / out_image.name} ({new_width}x{new_height})", flush=True)
 
-print(f"Dataset prep complete. Originals are in: {input_dir}", flush=True)
+print(f"Dataset prep complete: {prepared} images. Originals are in: {input_dir}", flush=True)
 print(f"Prepared numbered images/captions are in: {output_dir}", flush=True)
 `
 	return []string{

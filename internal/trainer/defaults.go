@@ -157,6 +157,8 @@ func applyStableDefaultsWithVRAM(s Settings, totalVRAMMB int) (Settings, string)
 	var imageCount int
 	if profile.Video {
 		imageCount = countDatasetVideos(s.DatasetPath)
+	} else if profile.Family == trainingFamilySDScripts {
+		imageCount = countDatasetImagesRecursive(s.DatasetPath)
 	} else {
 		imageCount = countDatasetImages(s.DatasetPath)
 	}
