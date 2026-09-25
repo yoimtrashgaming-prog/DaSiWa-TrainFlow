@@ -167,6 +167,39 @@ func TestDatasetTagCommands_oneFolderAtATimeSkippingInput(t *testing.T) {
 	}
 }
 
+func TestTriggerWord_trailingCommaNotDoubled(t *testing.T) {
+	root := t.TempDir()
+	writeDataset(t, root, "1.png", "1.txt")
+	for _, trigger := range []string{"3sh", "3sh, ", " 3sh ,", "3sh,,"} {
+		s := normalizeSettings(Settings{
+			Architecture:  ArchitectureSDXL,
+			ProjectName:   "trigger",
+			OutputPath:    t.TempDir(),
+			DatasetPath:   root,
+			TriggerWord:   trigger,
+			AutoTrigger:   true,
+			TrainingSteps: 10,
+			SamplePrompts: []string{"3sh, 1girl", "1boy"},
+		})
+		ds, err := createDatasetTOML(s.ProjectName, s, profileFor(s), 1024, 1024, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(ds)
+		if !strings.Contains(string(data), `caption_prefix = "3sh, "`+"\n") {
+			t.Errorf("trigger %q: want caption_prefix \"3sh, \", got:\n%s", trigger, data)
+		}
+		promptPath, err := createSamplePrompts(s.ProjectName, s, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompts, _ := os.ReadFile(promptPath)
+		if strings.Contains(string(prompts), "3sh, 3sh") || strings.Contains(string(prompts), ",,") || !strings.Contains(string(prompts), "3sh, 1boy") {
+			t.Errorf("trigger %q: sample prompts wrong:\n%s", trigger, prompts)
+		}
+	}
+}
+
 func TestValidateSettings_partialSecondCaption(t *testing.T) {
 	root := t.TempDir()
 	writeDataset(t, root,

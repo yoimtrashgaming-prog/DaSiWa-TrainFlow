@@ -10,8 +10,15 @@ import (
 	"trainflow/internal/process"
 )
 
+// triggerWord is the trigger as it should appear in captions and prompts. The
+// field is easy to fill as "3sh, " (how it looks in a caption), and TrainFlow
+// adds its own ", " separator, so trailing commas used to give "3sh,, ".
+func triggerWord(s Settings) string {
+	return strings.Trim(s.TriggerWord, " \t,")
+}
+
 func createSamplePrompts(projectName string, s Settings, outDir string) (string, error) {
-	trigger := strings.TrimSpace(s.TriggerWord)
+	trigger := triggerWord(s)
 	neg := strings.TrimSpace(strings.ReplaceAll(s.NegativePrompt, "\n", " "))
 
 	// Build list of positive prompts. Prefer SamplePrompts array; fall back to legacy PositivePrompt.
@@ -106,8 +113,8 @@ func createDatasetTOML(projectName string, s Settings, profile trainingProfile, 
 		repeats = 1
 	}
 	prefix := ""
-	if s.AutoTrigger && strings.TrimSpace(s.TriggerWord) != "" {
-		prefix = strings.TrimSpace(s.TriggerWord) + ", "
+	if s.AutoTrigger && triggerWord(s) != "" {
+		prefix = triggerWord(s) + ", "
 	}
 
 	content := strings.Builder{}
@@ -256,8 +263,8 @@ func writeAnimaCompileTOML(content *strings.Builder, s Settings) {
 
 func writeMetadataTOML(content *strings.Builder, projectName string, s Settings) {
 	content.WriteString(fmt.Sprintf("metadata_title = %s\n", tomlString(projectName)))
-	if strings.TrimSpace(s.TriggerWord) != "" {
-		content.WriteString(fmt.Sprintf("metadata_trigger_phrase = %s\n", tomlString(strings.TrimSpace(s.TriggerWord))))
+	if triggerWord(s) != "" {
+		content.WriteString(fmt.Sprintf("metadata_trigger_phrase = %s\n", tomlString(triggerWord(s))))
 	}
 	if strings.TrimSpace(s.MetadataAuthor) != "" {
 		content.WriteString(fmt.Sprintf("metadata_author = %s\n", tomlString(strings.TrimSpace(s.MetadataAuthor))))

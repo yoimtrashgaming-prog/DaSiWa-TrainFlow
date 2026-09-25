@@ -111,8 +111,8 @@ func normalizeArchitecture(value string) string {
 
 func normalizeSettings(s Settings) Settings {
 	s.Architecture = normalizeArchitecture(s.Architecture)
-	if strings.TrimSpace(s.ProjectName) == "" && strings.TrimSpace(s.TriggerWord) != "" {
-		s.ProjectName = strings.TrimSpace(s.TriggerWord)
+	if strings.TrimSpace(s.ProjectName) == "" && triggerWord(s) != "" {
+		s.ProjectName = triggerWord(s)
 	}
 	if s.TargetEpochs <= 0 {
 		s.TargetEpochs = 6

@@ -42,7 +42,7 @@ func projectNameForSettings(s Settings) string {
 	if strings.TrimSpace(s.ProjectName) != "" {
 		return sanitizeProjectName(s.ProjectName)
 	}
-	return sanitizeProjectName(s.TriggerWord)
+	return sanitizeProjectName(triggerWord(s))
 }
 
 func validImageExt(path string) bool {
